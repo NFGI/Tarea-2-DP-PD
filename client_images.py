@@ -1,43 +1,81 @@
+import os
+import sys
+import time
 import base64
 import requests
+from typing import List
 
-# URL de la API (cambia por la de Render cuando la tengas desplegada)
-API_URL = "http://127.0.0.1:8000/predict"
+# === Config ===
+API_BASE = "https://tarea-2-dp-pd.onrender.com"
+PREDICT_URL = f"{API_BASE.rstrip('/')}/predict"
 
-# Ruta de la imagen de prueba (sucia)
-INPUT_IMAGE = "test_dirty.png"
-OUTPUT_IMAGE = "resultado.png"
+# Rutas por defecto (las que me diste)
+DEFAULT_INPUTS = [
+    r"C:\Users\nicol\Desktop\denoising-dirty-documents\test\145.png",
+    r"C:\Users\nicol\Desktop\denoising-dirty-documents\test\52.png",
+    r"C:\Users\nicol\Desktop\denoising-dirty-documents\test\76.png",
+]
 
-def image_to_base64(path):
-    """Convierte una imagen en base64"""
+def image_to_b64(path: str) -> str:
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
 
-def base64_to_image(b64_string, path):
-    """Convierte base64 a imagen y guarda en disco"""
-    img_bytes = base64.b64decode(b64_string)
-    with open(path, "wb") as f:
-        f.write(img_bytes)
+def b64_to_file(b64_str: str, out_path: str) -> None:
+    data = base64.b64decode(b64_str)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "wb") as f:
+        f.write(data)
+
+def pick_inputs_from_args() -> List[str]:
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    return args if args else DEFAULT_INPUTS
 
 def main():
-    # Cargar imagen de prueba
-    img_b64 = image_to_base64(INPUT_IMAGE)
+    inputs = pick_inputs_from_args()
+    print(f"→ Endpoint: {PREDICT_URL}")
+    print(f"→ Casos: {inputs}")
 
-    # Crear payload
-    payload = {"image_base64": img_b64}
+    ok, fail = 0, 0
+    for i, in_path in enumerate(inputs, 1):
+        if not os.path.isfile(in_path):
+            print(f"[{i}] ⚠️ No existe: {in_path}")
+            fail += 1
+            continue
 
-    # Hacer POST a la API
-    response = requests.post(API_URL, json=payload)
+        try:
+            img_b64 = image_to_b64(in_path)
+            payload = {"image_b64": img_b64}
 
-    if response.status_code == 200:
-        result = response.json()
-        print("✅ Respuesta recibida correctamente")
+            t0 = time.time()
+            r = requests.post(PREDICT_URL, json=payload, timeout=120)
+            dt = time.time() - t0
 
-        # Guardar imagen resultante
-        base64_to_image(result["cleaned_image_base64"], OUTPUT_IMAGE)
-        print(f"🖼 Imagen procesada guardada en {OUTPUT_IMAGE}")
-    else:
-        print("❌ Error en la petición:", response.status_code, response.text)
+            print(f"[{i}] {os.path.basename(in_path)} → {r.status_code} ({dt:0.2f}s)")
+            if not r.ok:
+                print("    Respuesta:", r.text[:300], "...")
+                fail += 1
+                continue
+
+            data = r.json()
+            out_path = os.path.join("results", f"cleaned_{i}.png")
+            b64_to_file(data["cleaned_image_b64"], out_path)
+            print(f"    ✅ Guardado: {out_path}")
+            ok += 1
+
+        except requests.exceptions.RequestException as e:
+            print(f"    ❌ Error de red/timeout: {e}")
+            fail += 1
+        except KeyError:
+            print(f"    ❌ La respuesta no trae 'cleaned_image_b64'. Respuesta: {r.text[:300]} ...")
+            fail += 1
+        except Exception as e:
+            print(f"    ❌ Error inesperado: {e}")
+            fail += 1
+
+    print("\n=== Resumen ===")
+    print(f"OK:   {ok}")
+    print(f"Fail: {fail}")
+    print("Resultados en: results/")
 
 if __name__ == "__main__":
     main()
